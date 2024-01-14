@@ -1,22 +1,31 @@
 from abc import abstractmethod, ABC
-from typing import Any, Dict, Literal
+from typing import Any, Dict, Literal, List, Union
 import datasets
 
 from afri_rlhf.prompt.templates import Prompt
 from afri_rlhf.utils.language import Language
-
+import random
 
 
 class DatasourceBase(ABC):
-    prompt_header: str = "ከዚህ በታች አንድን ተግባር የሚገልጽ መመሪያ ተጨማሪ አውድ ከሚሰጥ ግብአት ጋር ተጣምሮ አለ። ጥያቄውን በትክክል የሚያጠናቅቅ ምላሽ ስጥ።"
-    def __init__(self, *, language: Language, split: str, prompt: Prompt):
+    def __init__(self, *, language: Language, split: str, prompt: Union[List[Prompt], Prompt]):
+        """A base class for all datasources
+
+        Args:
+            language (Language): Language of the dataset. This is useful datasets loaded from huggingface
+            split (str): The split to load. Could be train, validation or test
+            prompt (Union[List[Prompt], Prompt]): A prompt or list of prompts. If list of prompt is given 
+            the prompt templates are applied randomly.
+        """
         self.split = split
         self.language = language
-        self.prompt = prompt
+        if type(prompt) == Prompt:
+            prompt = [prompt]
+        self.prompts = prompt
 
     @abstractmethod
     def get_datasource_name(self):
-        pass
+        raise NotImplementedError
 
     @abstractmethod
     def load_from_external(self) -> datasets.Dataset:
@@ -25,24 +34,9 @@ class DatasourceBase(ABC):
         Returns:
             datasets.Dataset: Dataset loaded from extral sources.
         """
-        pass
+        raise NotImplementedError
 
-    def format_prompt(self, prompt_sections: Dict[str, str]) -> Dict[str, str]:
-        """Creates a prompt from a record. It makes it possible to train RLHF model
-        from classification datasets. Prompt sections are header, instructions, input and response. 
-        The input is optional and can be omitted.
-
-        Args:
-            prompt_sections (Dict[str, Any]): Dictionary containing prompt sections
-
-        Returns:
-            Dict[str, str]: Dictionary with formatted prompt. The prompt is created from the prebuilt prompt
-            templates and the current prompt sections
-        """
-
-        output = prompt_sections.copy()
-        output["prompt"] = self.prompt.format(**prompt_sections)
-        return output
+    # TODO: Add support for formatting prompts
 
     def get_prompt_sections(self, item: Dict[str, Any]) -> Dict[str, str]:
         """Gets prompt sections from classification datasets. Prompt sections are header, instructions, input and response. 
@@ -54,11 +48,12 @@ class DatasourceBase(ABC):
         Returns:
             Dict[str, str]: Prompt sections
         """
+        prompt = random.choice(self.prompts)
         return {
-            "instruction": self.prompt.instruction,
+            "instruction": prompt.instruction,
             "input": self.get_prompt_inputs(item),
             "output": self.get_prompt_output(item),
-            "prompt_header": self.prompt.header,
+            "prompt_header": prompt.header,
             "datasource": self.get_datasource_name()
         }
 
@@ -72,7 +67,7 @@ class DatasourceBase(ABC):
         Returns:
             str: Prompt inputs
         """
-        pass
+        raise NotImplementedError
 
     @abstractmethod
     def get_prompt_output(self,  item: Dict[str, Any]) -> str:
@@ -84,9 +79,9 @@ class DatasourceBase(ABC):
         Returns:
             str: Prompt output
         """
-        pass
+        raise NotImplementedError
 
-    def load_dataset(self, apply_formatting = False) -> datasets.Dataset:
+    def load_dataset(self) -> datasets.Dataset:
         """Loads the dataset
 
         Returns:
@@ -98,15 +93,13 @@ class DatasourceBase(ABC):
         
         dataset = dataset.map(self.get_prompt_sections, batched=False).remove_columns(original_columns)
         
-        if apply_formatting:
-            dataset = dataset.map(self.format_prompt)
         
         return dataset
     
 
 class ClassificationDatasourceBase:
 
-    id_to_label: Dict[str, int] = None
+    id_to_label: Dict[int, str] = None
     
 
     @property
@@ -115,7 +108,7 @@ class ClassificationDatasourceBase:
     
 class AfriSentDatasource(DatasourceBase, ClassificationDatasourceBase):
 
-    id_to_label: Dict[str, int] = {
+    id_to_label: Dict[int, str] = {
         0: "አዎንታዊ",
         1: "ገለልተኛ",
         2: "አሉታዊ"
@@ -136,6 +129,7 @@ class AfriSentDatasource(DatasourceBase, ClassificationDatasourceBase):
     
     def get_datasource_name(self):
         return "afrisent"
+    
 
 class MasakhaNewsDatasource(DatasourceBase, ABC):
     def load_from_external(self):
@@ -153,7 +147,7 @@ class MasakhaNewsHeadlineGenerationDatasource(MasakhaNewsDatasource):
         return item["headline"]
 
 class MasakhaNewsClassificationDatasource(MasakhaNewsDatasource, ClassificationDatasourceBase):
-    id_to_label: Dict[str, int] = {
+    id_to_label: Dict[int, str] = {
             0: "ብዝነስ",
             1: "መዝናኛ",
             2: "ጤና",
@@ -170,7 +164,7 @@ class MasakhaNewsClassificationDatasource(MasakhaNewsDatasource, ClassificationD
         return self.id_to_label[item["label"]]
     
 class MasakhaNERDatasource(DatasourceBase, ClassificationDatasourceBase):
-    id_to_label: Dict[str, int] = {
+    id_to_label: Dict[int, str] = {
             0: "O",
             1: "B-DATE",
             2: "I-DATE",
